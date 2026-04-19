@@ -6,7 +6,7 @@ blueprint:
     below a threshold. During dusk, night, and dawn, always turn on.
   domain: automation
   author: artogahr
-  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter-motion-light.yaml
+  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter_motion_light.yaml
   input:
     motion_entity:
       name: Motion Sensor
