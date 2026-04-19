@@ -11,13 +11,15 @@ The stock motion light blueprint fires on any motion, even at noon with sunlight
 - **Illuminance** — skip turning on if a lux sensor says the room is already bright enough.
 - **Sun position** — during dusk, night, and dawn, ignore the lux check and always turn on.
 
+It also supports smooth fade-on / fade-off transitions instead of snapping lights on and off.
+
 Both gates are independent toggles. Pick whichever combo fits your room.
 
 ## Recommended setups
 
 - **Window + lux sensor:** both gates on. Start with a 60 lux threshold and tune.
 - **No window / weird exposure:** sun off, lux on.
-- **No lux sensor:** both off. Plain motion light with a sane 0s default wait time.
+- **No lux sensor:** both off. Plain motion light with a sane 10s default wait time.
 
 ## Inputs
 
@@ -26,11 +28,14 @@ Both gates are independent toggles. Pick whichever combo fits your room.
 | Motion Sensor | Motion or occupancy binary sensor. |
 | Light | Light or group to control. |
 | Use sun gating | Bypass lux check during dusk/night/dawn. |
-| Sunrise / sunset offset | Hours to shrink the "daytime" window. Default 1h. Bump higher at high latitudes. |
+| Sunrise / sunset offset | Minutes to shrink the "daytime" window. Default 60. Bump higher at high latitudes. |
 | Use illuminance gating | Only turn on if lux is below threshold. |
 | Illuminance Sensor | Required only if lux gating is on. |
 | Illuminance Threshold | Default 60 lx. |
-| Wait time | Seconds to keep the light on after motion clears. Default 0. |
+| Use smooth transitions | Fade on/off instead of snapping. |
+| Turn-on transition | Seconds to fade on. Default 2. |
+| Turn-off transition | Seconds to fade off. Default 5. |
+| Wait time | Seconds to keep the light on after motion clears. Default 10. |
 
 ## Tuning the lux threshold
 

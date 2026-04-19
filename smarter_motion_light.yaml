@@ -5,10 +5,11 @@ blueprint:
     ambient illuminance and/or sun position. By default, during daytime
     the light only turns on if the room is dim; during dusk, night, and
     dawn, motion always turns the light on. Both gates can be disabled
-    individually to simplify the behavior.
+    individually to simplify the behavior. Optional smooth transitions
+    for turn-on and turn-off.
   domain: automation
   author: artogahr
-  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter-motion-light.yaml
+  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter_motion_light.yaml
   input:
     motion_entity:
       name: Motion Sensor
@@ -38,31 +39,32 @@ blueprint:
       default: true
       selector:
         boolean:
-    sunrise_offset_hours:
-      name: Sunrise offset (hours)
+    sunrise_offset_minutes:
+      name: Sunrise offset (minutes)
       description: >
-        How many hours after sunrise the "daytime" window starts.
+        How many minutes after sunrise the "daytime" window starts.
         Larger values delay the start of daytime. Only used if sun
         gating is enabled.
-      default: 1
+      default: 60
       selector:
         number:
           min: 0
-          max: 4
-          step: 0.25
-          unit_of_measurement: hours
-    sunset_offset_hours:
-      name: Sunset offset (hours)
+          max: 240
+          step: 5
+          unit_of_measurement: minutes
+    sunset_offset_minutes:
+      name: Sunset offset (minutes)
       description: >
-        How many hours before sunset the "daytime" window ends. Larger
-        values end daytime earlier. Only used if sun gating is enabled.
-      default: 1
+        How many minutes before sunset the "daytime" window ends.
+        Larger values end daytime earlier. Only used if sun gating is
+        enabled.
+      default: 60
       selector:
         number:
           min: 0
-          max: 4
-          step: 0.25
-          unit_of_measurement: hours
+          max: 240
+          step: 5
+          unit_of_measurement: minutes
 
     lux_gating:
       name: Use illuminance gating
@@ -94,13 +96,42 @@ blueprint:
       selector:
         number:
           min: 0
-          max: 2000
+          max: 500
           unit_of_measurement: lx
+
+    use_transitions:
+      name: Use smooth transitions
+      description: >
+        When enabled, the light fades on and off over the configured
+        durations. Requires bulbs that support the transition parameter.
+      default: true
+      selector:
+        boolean:
+    turn_on_transition:
+      name: Turn-on transition
+      description: Seconds over which to fade the light on.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 0.5
+          unit_of_measurement: seconds
+    turn_off_transition:
+      name: Turn-off transition
+      description: Seconds over which to fade the light off.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 0.5
+          unit_of_measurement: seconds
 
     no_motion_wait:
       name: Wait time
       description: Seconds to leave the light on after motion clears.
-      default: 0
+      default: 10
       selector:
         number:
           min: 0
@@ -115,8 +146,11 @@ variables:
   lux_gating: !input lux_gating
   illuminance_entity: !input illuminance_entity
   illuminance_threshold: !input illuminance_threshold
-  sunrise_offset_hours: !input sunrise_offset_hours
-  sunset_offset_hours: !input sunset_offset_hours
+  sunrise_offset_minutes: !input sunrise_offset_minutes
+  sunset_offset_minutes: !input sunset_offset_minutes
+  use_transitions: !input use_transitions
+  turn_on_transition: !input turn_on_transition
+  turn_off_transition: !input turn_off_transition
 
 triggers:
   trigger: state
@@ -127,41 +161,29 @@ triggers:
 conditions:
   - condition: template
     value_template: >
-      {# If sun gating is on, compute whether we are in the "solid daytime" window. #}
-      {# If sun gating is off, we treat every moment as if daytime gating applies. #}
-      {% set sun_elev = state_attr('sun.sun', 'elevation') | float(0) %}
       {% set is_day = is_state('sun.sun', 'above_horizon') %}
       {% set sunrise_ts = as_timestamp(state_attr('sun.sun', 'next_rising')) %}
       {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) %}
       {% set now_ts = as_timestamp(now()) %}
-      {# "In daytime window" means: sun is up, AND we are past (sunrise + offset), AND before (sunset - offset).
-         next_rising/next_setting flip once the event passes, so we infer using sun state + relative times. #}
       {% if is_day %}
-        {# Sun is up; next_setting is today's sunset; last sunrise was today. #}
-        {% set last_sunrise_ts = sunrise_ts - 86400 if sunrise_ts > now_ts else sunrise_ts %}
-        {# Actually when sun is up, next_rising is tomorrow's sunrise, so last sunrise was today: #}
+        {# Sun is up: next_rising is tomorrow, so today's sunrise was sunrise_ts - 86400 #}
         {% set last_sunrise_ts = sunrise_ts - 86400 %}
-        {% set daytime_start = last_sunrise_ts + (sunrise_offset_hours * 3600) %}
-        {% set daytime_end = sunset_ts - (sunset_offset_hours * 3600) %}
+        {% set daytime_start = last_sunrise_ts + (sunrise_offset_minutes * 60) %}
+        {% set daytime_end = sunset_ts - (sunset_offset_minutes * 60) %}
         {% set in_daytime_window = now_ts >= daytime_start and now_ts <= daytime_end %}
       {% else %}
         {% set in_daytime_window = false %}
       {% endif %}
 
-      {# Decide whether to apply the lux gate. #}
       {% if sun_gating and not in_daytime_window %}
-        {# Dusk/night/dawn with sun gating on: skip lux check, always allow. #}
         true
       {% elif lux_gating %}
-        {# Daytime (or sun gating off): require lux below threshold. #}
         {% if illuminance_entity in [none, ''] %}
-          {# Lux gating on but no sensor picked: fail safe, do nothing. #}
           false
         {% else %}
           {{ states(illuminance_entity) | float(9999) < illuminance_threshold }}
         {% endif %}
       {% else %}
-        {# No lux gating and either sun gating off or it's daytime: always allow. #}
         true
       {% endif %}
 
@@ -169,6 +191,8 @@ actions:
   - alias: "Turn on the light"
     action: light.turn_on
     target: !input light_target
+    data: >
+      {{ {'transition': turn_on_transition} if use_transitions else {} }}
   - alias: "Wait until there is no motion from device"
     wait_for_trigger:
       trigger: state
@@ -180,3 +204,5 @@ actions:
   - alias: "Turn off the light"
     action: light.turn_off
     target: !input light_target
+    data: >
+      {{ {'transition': turn_off_transition} if use_transitions else {} }}
