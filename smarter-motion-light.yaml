@@ -1,0 +1,91 @@
+blueprint:
+  name: "Motion-activated Light with Illuminance and Sun"
+  description: >
+    Turn on a light when motion is detected. During daytime (1h after
+    sunrise to 1h before sunset) only turn on if ambient illuminance is
+    below a threshold. During dusk, night, and dawn, always turn on.
+  domain: automation
+  author: artogahr
+  source_orl: https://github.com/artogahr/smarter-motion-light/blob/main/smarter-motion-light.yaml
+  input:
+    motion_entity:
+      name: Motion Sensor
+      selector:
+        entity:
+          filter:
+            - device_class: occupancy
+              domain: binary_sensor
+            - device_class: motion
+              domain: binary_sensor
+    illuminance_entity:
+      name: Illuminance Sensor
+      selector:
+        entity:
+          filter:
+            - device_class: illuminance
+              domain: sensor
+    illuminance_threshold:
+      name: Illuminance Threshold
+      description: >
+        During daytime, if illuminance is at or above this value, the
+        light will not turn on. Ignored during dusk, night, and dawn.
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 2000
+          unit_of_measurement: lx
+    light_target:
+      name: Light
+      selector:
+        target:
+          entity:
+            domain: light
+    no_motion_wait:
+      name: Wait time
+      description: Time to leave the light on after last motion is detected.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: seconds
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  trigger: state
+  entity_id: !input motion_entity
+  from: "off"
+  to: "on"
+
+conditions:
+  - condition: or
+    conditions:
+      - condition: not
+        conditions:
+          - condition: sun
+            after: sunrise
+            after_offset: "01:00:00"
+            before: sunset
+            before_offset: "-01:00:00"
+      - condition: numeric_state
+        entity_id: !input illuminance_entity
+        below: !input illuminance_threshold
+
+actions:
+  - alias: "Turn on the light"
+    action: light.turn_on
+    target: !input light_target
+  - alias: "Wait until there is no motion from device"
+    wait_for_trigger:
+      trigger: state
+      entity_id: !input motion_entity
+      from: "on"
+      to: "off"
+  - alias: "Wait the number of seconds that has been set"
+    delay: !input no_motion_wait
+  - alias: "Turn off the light"
+    action: light.turn_off
+    target: !input light_target
