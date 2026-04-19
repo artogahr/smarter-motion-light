@@ -1,15 +1,18 @@
 blueprint:
   name: "Motion-activated Light with Illuminance and Sun"
   description: >
-    Turn on a light when motion is detected. During daytime (1h after
-    sunrise to 1h before sunset) only turn on if ambient illuminance is
-    below a threshold. During dusk, night, and dawn, always turn on.
+    Turn on a light when motion is detected, with optional gating by
+    ambient illuminance and/or sun position. By default, during daytime
+    the light only turns on if the room is dim; during dusk, night, and
+    dawn, motion always turns the light on. Both gates can be disabled
+    individually to simplify the behavior.
   domain: automation
   author: artogahr
-  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter_motion_light.yaml
+  source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter-motion-light.yaml
   input:
     motion_entity:
       name: Motion Sensor
+      description: Binary sensor that triggers the light.
       selector:
         entity:
           filter:
@@ -17,8 +20,66 @@ blueprint:
               domain: binary_sensor
             - device_class: motion
               domain: binary_sensor
+    light_target:
+      name: Light
+      description: Light or group of lights to control.
+      selector:
+        target:
+          entity:
+            domain: light
+
+    sun_gating:
+      name: Use sun gating
+      description: >
+        When enabled, the illuminance check only applies during daytime.
+        During dusk, night, and dawn, motion always turns the light on
+        (illuminance is ignored). When disabled, illuminance gating (if
+        enabled) applies 24 hours a day.
+      default: true
+      selector:
+        boolean:
+    sunrise_offset_hours:
+      name: Sunrise offset (hours)
+      description: >
+        How many hours after sunrise the "daytime" window starts.
+        Larger values delay the start of daytime. Only used if sun
+        gating is enabled.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 4
+          step: 0.25
+          unit_of_measurement: hours
+    sunset_offset_hours:
+      name: Sunset offset (hours)
+      description: >
+        How many hours before sunset the "daytime" window ends. Larger
+        values end daytime earlier. Only used if sun gating is enabled.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 4
+          step: 0.25
+          unit_of_measurement: hours
+
+    lux_gating:
+      name: Use illuminance gating
+      description: >
+        When enabled, the light only turns on if the illuminance sensor
+        reads below the threshold. When disabled, motion alone is
+        enough (subject to sun gating if that is also enabled).
+      default: true
+      selector:
+        boolean:
     illuminance_entity:
       name: Illuminance Sensor
+      description: >
+        Only used if illuminance gating is enabled. Pick any sensor
+        with device_class "illuminance" (for example the lux sensor
+        on a presence device).
+      default:
       selector:
         entity:
           filter:
@@ -27,23 +88,18 @@ blueprint:
     illuminance_threshold:
       name: Illuminance Threshold
       description: >
-        During daytime, if illuminance is at or above this value, the
-        light will not turn on. Ignored during dusk, night, and dawn.
-      default: 100
+        If illuminance is at or above this value, the light will not
+        turn on. Only used if illuminance gating is enabled.
+      default: 60
       selector:
         number:
           min: 0
           max: 2000
           unit_of_measurement: lx
-    light_target:
-      name: Light
-      selector:
-        target:
-          entity:
-            domain: light
+
     no_motion_wait:
       name: Wait time
-      description: Time to leave the light on after last motion is detected.
+      description: Seconds to leave the light on after motion clears.
       default: 0
       selector:
         number:
@@ -54,6 +110,14 @@ blueprint:
 mode: restart
 max_exceeded: silent
 
+variables:
+  sun_gating: !input sun_gating
+  lux_gating: !input lux_gating
+  illuminance_entity: !input illuminance_entity
+  illuminance_threshold: !input illuminance_threshold
+  sunrise_offset_hours: !input sunrise_offset_hours
+  sunset_offset_hours: !input sunset_offset_hours
+
 triggers:
   trigger: state
   entity_id: !input motion_entity
@@ -61,18 +125,45 @@ triggers:
   to: "on"
 
 conditions:
-  - condition: or
-    conditions:
-      - condition: not
-        conditions:
-          - condition: sun
-            after: sunrise
-            after_offset: "01:00:00"
-            before: sunset
-            before_offset: "-01:00:00"
-      - condition: numeric_state
-        entity_id: !input illuminance_entity
-        below: !input illuminance_threshold
+  - condition: template
+    value_template: >
+      {# If sun gating is on, compute whether we are in the "solid daytime" window. #}
+      {# If sun gating is off, we treat every moment as if daytime gating applies. #}
+      {% set sun_elev = state_attr('sun.sun', 'elevation') | float(0) %}
+      {% set is_day = is_state('sun.sun', 'above_horizon') %}
+      {% set sunrise_ts = as_timestamp(state_attr('sun.sun', 'next_rising')) %}
+      {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) %}
+      {% set now_ts = as_timestamp(now()) %}
+      {# "In daytime window" means: sun is up, AND we are past (sunrise + offset), AND before (sunset - offset).
+         next_rising/next_setting flip once the event passes, so we infer using sun state + relative times. #}
+      {% if is_day %}
+        {# Sun is up; next_setting is today's sunset; last sunrise was today. #}
+        {% set last_sunrise_ts = sunrise_ts - 86400 if sunrise_ts > now_ts else sunrise_ts %}
+        {# Actually when sun is up, next_rising is tomorrow's sunrise, so last sunrise was today: #}
+        {% set last_sunrise_ts = sunrise_ts - 86400 %}
+        {% set daytime_start = last_sunrise_ts + (sunrise_offset_hours * 3600) %}
+        {% set daytime_end = sunset_ts - (sunset_offset_hours * 3600) %}
+        {% set in_daytime_window = now_ts >= daytime_start and now_ts <= daytime_end %}
+      {% else %}
+        {% set in_daytime_window = false %}
+      {% endif %}
+
+      {# Decide whether to apply the lux gate. #}
+      {% if sun_gating and not in_daytime_window %}
+        {# Dusk/night/dawn with sun gating on: skip lux check, always allow. #}
+        true
+      {% elif lux_gating %}
+        {# Daytime (or sun gating off): require lux below threshold. #}
+        {% if illuminance_entity in [none, ''] %}
+          {# Lux gating on but no sensor picked: fail safe, do nothing. #}
+          false
+        {% else %}
+          {{ states(illuminance_entity) | float(9999) < illuminance_threshold }}
+        {% endif %}
+      {% else %}
+        {# No lux gating and either sun gating off or it's daytime: always allow. #}
+        true
+      {% endif %}
 
 actions:
   - alias: "Turn on the light"
