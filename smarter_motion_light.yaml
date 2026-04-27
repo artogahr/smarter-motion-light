@@ -7,6 +7,11 @@ blueprint:
     dawn, motion always turns the light on. Both gates can be disabled
     individually to simplify the behavior. Optional smooth transitions
     for turn-on and turn-off.
+
+    A stale-lights timeout turns off lights that were left on by an
+    external source (schedule, manual) after the room has been empty
+    for the configured duration, with an automatic retry if the first
+    command is dropped.
   domain: automation
   author: artogahr
   source_url: https://github.com/artogahr/smarter-motion-light/blob/main/smarter_motion_light.yaml
@@ -138,6 +143,20 @@ blueprint:
           max: 3600
           unit_of_measurement: seconds
 
+    stale_timeout:
+      name: Stale lights timeout
+      description: >
+        If the room has been empty for this many seconds and lights are
+        still on (e.g. turned on by a schedule or manually), they will
+        be turned off automatically. Should be set higher than the wait
+        time above. Set to 0 to disable.
+      default: 600
+      selector:
+        number:
+          min: 0
+          max: 7200
+          unit_of_measurement: seconds
+
 mode: restart
 max_exceeded: silent
 
@@ -151,58 +170,95 @@ variables:
   use_transitions: !input use_transitions
   turn_on_transition: !input turn_on_transition
   turn_off_transition: !input turn_off_transition
+  stale_timeout: !input stale_timeout
 
 triggers:
-  trigger: state
-  entity_id: !input motion_entity
-  from: "off"
-  to: "on"
-
-conditions:
-  - condition: template
-    value_template: >
-      {% set is_day = is_state('sun.sun', 'above_horizon') %}
-      {% set sunrise_ts = as_timestamp(state_attr('sun.sun', 'next_rising')) %}
-      {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) %}
-      {% set now_ts = as_timestamp(now()) %}
-      {% if is_day %}
-        {# Sun is up: next_rising is tomorrow, so today's sunrise was sunrise_ts - 86400 #}
-        {% set last_sunrise_ts = sunrise_ts - 86400 %}
-        {% set daytime_start = last_sunrise_ts + (sunrise_offset_minutes * 60) %}
-        {% set daytime_end = sunset_ts - (sunset_offset_minutes * 60) %}
-        {% set in_daytime_window = now_ts >= daytime_start and now_ts <= daytime_end %}
-      {% else %}
-        {% set in_daytime_window = false %}
-      {% endif %}
-
-      {% if sun_gating and not in_daytime_window %}
-        true
-      {% elif lux_gating %}
-        {% if illuminance_entity in [none, ''] %}
-          false
-        {% else %}
-          {{ states(illuminance_entity) | float(9999) < illuminance_threshold }}
-        {% endif %}
-      {% else %}
-        true
-      {% endif %}
+  - trigger: state
+    entity_id: !input motion_entity
+    from: "off"
+    to: "on"
+    id: motion_on
+  - trigger: state
+    entity_id: !input motion_entity
+    to: "off"
+    for:
+      seconds: !input stale_timeout
+    id: motion_stale
 
 actions:
-  - alias: "Turn on the light"
-    action: light.turn_on
-    target: !input light_target
-    data: >
-      {{ {'transition': turn_on_transition} if use_transitions else {} }}
-  - alias: "Wait until there is no motion from device"
-    wait_for_trigger:
-      trigger: state
-      entity_id: !input motion_entity
-      from: "on"
-      to: "off"
-  - alias: "Wait the number of seconds that has been set"
-    delay: !input no_motion_wait
-  - alias: "Turn off the light"
-    action: light.turn_off
-    target: !input light_target
-    data: >
-      {{ {'transition': turn_off_transition} if use_transitions else {} }}
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: motion_on
+        sequence:
+          - condition: template
+            value_template: >
+              {% set is_day = is_state('sun.sun', 'above_horizon') %}
+              {% set sunrise_ts = as_timestamp(state_attr('sun.sun', 'next_rising')) %}
+              {% set sunset_ts = as_timestamp(state_attr('sun.sun', 'next_setting')) %}
+              {% set now_ts = as_timestamp(now()) %}
+              {% if is_day %}
+                {# Sun is up: next_rising is tomorrow, so today's sunrise was sunrise_ts - 86400 #}
+                {% set last_sunrise_ts = sunrise_ts - 86400 %}
+                {% set daytime_start = last_sunrise_ts + (sunrise_offset_minutes * 60) %}
+                {% set daytime_end = sunset_ts - (sunset_offset_minutes * 60) %}
+                {% set in_daytime_window = now_ts >= daytime_start and now_ts <= daytime_end %}
+              {% else %}
+                {% set in_daytime_window = false %}
+              {% endif %}
+
+              {% if sun_gating and not in_daytime_window %}
+                true
+              {% elif lux_gating %}
+                {% if illuminance_entity in [none, ''] %}
+                  false
+                {% else %}
+                  {{ states(illuminance_entity) | float(9999) < illuminance_threshold }}
+                {% endif %}
+              {% else %}
+                true
+              {% endif %}
+          - alias: "Turn on the light"
+            action: light.turn_on
+            target: !input light_target
+            data: >
+              {{ {'transition': turn_on_transition} if use_transitions else {} }}
+          - alias: "Wait until there is no motion from device"
+            wait_for_trigger:
+              trigger: state
+              entity_id: !input motion_entity
+              from: "on"
+              to: "off"
+          - alias: "Wait the number of seconds that has been set"
+            delay: !input no_motion_wait
+          - alias: "Turn off the light"
+            action: light.turn_off
+            target: !input light_target
+            data: >
+              {{ {'transition': turn_off_transition} if use_transitions else {} }}
+          - delay:
+              seconds: 5
+          - alias: "Turn off the light (retry)"
+            action: light.turn_off
+            target: !input light_target
+            data: >
+              {{ {'transition': turn_off_transition} if use_transitions else {} }}
+
+      - conditions:
+          - condition: trigger
+            id: motion_stale
+          - condition: template
+            value_template: "{{ stale_timeout > 0 }}"
+        sequence:
+          - alias: "Turn off stale lights"
+            action: light.turn_off
+            target: !input light_target
+            data: >
+              {{ {'transition': turn_off_transition} if use_transitions else {} }}
+          - delay:
+              seconds: 5
+          - alias: "Turn off stale lights (retry)"
+            action: light.turn_off
+            target: !input light_target
+            data: >
+              {{ {'transition': turn_off_transition} if use_transitions else {} }}
