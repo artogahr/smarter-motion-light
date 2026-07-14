@@ -36,6 +36,8 @@ Both gates are independent toggles. Pick whichever combo fits your room.
 | Turn-on transition | Seconds to fade on. Default 2. |
 | Turn-off transition | Seconds to fade off. Default 5. |
 | Wait time | Seconds to keep the light on after motion clears. Default 10. |
+| Stale lights timeout | Turn off lights left on by other sources after the room has been empty this long. 0 disables. Default 600. |
+| Blocker entity | Optional. While this entity is on (e.g. a sleep-mode toggle), motion won't turn the light on. Stale-lights cleanup still runs. |
 
 ## Tuning the lux threshold
 

@@ -157,6 +157,21 @@ blueprint:
           max: 7200
           unit_of_measurement: seconds
 
+    blocker_entity:
+      name: Blocker entity (optional)
+      description: >
+        When this entity is "on", motion will not turn the light on.
+        Useful for a sleep-mode or guest-mode toggle. The stale-lights
+        timeout still works while blocked. Leave empty to disable.
+      default:
+      selector:
+        entity:
+          filter:
+            - domain:
+                - input_boolean
+                - switch
+                - binary_sensor
+
 mode: restart
 max_exceeded: silent
 
@@ -171,6 +186,7 @@ variables:
   turn_on_transition: !input turn_on_transition
   turn_off_transition: !input turn_off_transition
   stale_timeout: !input stale_timeout
+  blocker_entity: !input blocker_entity
 
 triggers:
   - trigger: state
@@ -191,6 +207,10 @@ actions:
           - condition: trigger
             id: motion_on
         sequence:
+          - alias: "Abort if blocker entity is on"
+            condition: template
+            value_template: >
+              {{ blocker_entity in [none, ''] or not is_state(blocker_entity, 'on') }}
           - condition: template
             value_template: >
               {% set is_day = is_state('sun.sun', 'above_horizon') %}
